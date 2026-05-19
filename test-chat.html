@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>360Router — Quick Test</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0a0a0f; color: #e0e0e0; height: 100vh; display: flex; flex-direction: column; }
+  header { padding: 16px 24px; border-bottom: 1px solid #1a1a2e; display: flex; align-items: center; gap: 12px; }
+  header h1 { font-size: 18px; color: #00e5ff; }
+  header span { font-size: 12px; color: #666; }
+  #status { font-size: 12px; padding: 4px 10px; border-radius: 12px; }
+  .online { background: #0a2e0a; color: #4caf50; }
+  .offline { background: #2e0a0a; color: #f44336; }
+  #chat { flex: 1; overflow-y: auto; padding: 24px; display: flex; flex-direction: column; gap: 16px; }
+  .msg { max-width: 80%; padding: 12px 16px; border-radius: 12px; line-height: 1.5; white-space: pre-wrap; }
+  .user { align-self: flex-end; background: #1a3a5c; color: #fff; }
+  .assistant { align-self: flex-start; background: #1a1a2e; color: #e0e0e0; }
+  .meta { font-size: 11px; color: #666; margin-top: 6px; }
+  #input-area { padding: 16px 24px; border-top: 1px solid #1a1a2e; display: flex; gap: 12px; }
+  #input { flex: 1; padding: 12px 16px; border-radius: 8px; border: 1px solid #333; background: #111; color: #fff; font-size: 14px; outline: none; }
+  #input:focus { border-color: #00e5ff; }
+  #send { padding: 12px 24px; border-radius: 8px; border: none; background: #00e5ff; color: #000; font-weight: 600; cursor: pointer; }
+  #send:hover { background: #00b8d4; }
+  #send:disabled { background: #333; color: #666; cursor: not-allowed; }
+  #info { padding: 8px 24px; background: #0d0d15; font-size: 12px; color: #555; display: flex; gap: 24px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>360Router</h1>
+  <span>Quick Test Chat</span>
+  <div style="flex:1"></div>
+  <span id="status">checking...</span>
+</header>
+
+<div id="info">
+  <span id="model-count">Models: ...</span>
+  <span id="providers">Providers: ...</span>
+  <span id="protocol">Endpoint: localhost:3600</span>
+</div>
+
+<div id="chat">
+  <div class="msg assistant">
+    Connected to 360Router. Type a message to test routing.<br>
+    <span class="meta">The router will pick the best model automatically.</span>
+  </div>
+</div>
+
+<div id="input-area">
+  <input id="input" type="text" placeholder="Type a message..." autofocus />
+  <button id="send" onclick="sendMessage()">Send</button>
+</div>
+
+<script>
+const API = 'http://localhost:3600';
+const chat = document.getElementById('chat');
+const input = document.getElementById('input');
+const sendBtn = document.getElementById('send');
+
+// Check health on load
+fetch(API + '/health').then(r => r.json()).then(d => {
+  document.getElementById('status').textContent = 'online v' + d.version;
+  document.getElementById('status').className = 'online';
+}).catch(() => {
+  document.getElementById('status').textContent = 'offline';
+  document.getElementById('status').className = 'offline';
+});
+
+// Load models
+fetch(API + '/v1/models').then(r => r.json()).then(d => {
+  const count = d.data?.length || 0;
+  const owners = [...new Set(d.data?.map(m => m.owned_by) || [])];
+  document.getElementById('model-count').textContent = 'Models: ' + count;
+  document.getElementById('providers').textContent = 'Providers: ' + owners.join(', ');
+}).catch(() => {});
+
+input.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } });
+
+let messages = [];
+
+async function sendMessage() {
+  const text = input.value.trim();
+  if (!text) return;
+
+  input.value = '';
+  sendBtn.disabled = true;
+
+  // Show user message
+  addMsg('user', text);
+  messages.push({ role: 'user', content: text });
+
+  // Show typing indicator
+  const typing = addMsg('assistant', '...');
+
+  const start = Date.now();
+
+  try {
+    const res = await fetch(API + '/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messages, stream: false })
+    });
+
+    const data = await res.json();
+    const latency = Date.now() - start;
+
+    if (data.error) {
+      typing.querySelector('.content').textContent = 'Error: ' + data.error.message;
+    } else {
+      const content = data.choices?.[0]?.message?.content || 'No response';
+      const meta = data.x_360router || {};
+      typing.querySelector('.content').textContent = content;
+      typing.querySelector('.meta').textContent =
+        `${meta.provider || 'unknown'}/${data.model || '?'} · ${latency}ms · tier: ${meta.tier || '?'} · pii: ${meta.pii_detected ? 'yes' : 'no'}`;
+
+      messages.push({ role: 'assistant', content });
+    }
+  } catch (err) {
+    typing.querySelector('.content').textContent = 'Connection error: ' + err.message;
+  }
+
+  sendBtn.disabled = false;
+  input.focus();
+}
+
+function addMsg(role, text) {
+  const div = document.createElement('div');
+  div.className = 'msg ' + role;
+  div.innerHTML = '<span class="content">' + escapeHtml(text) + '</span><div class="meta"></div>';
+  chat.appendChild(div);
+  chat.scrollTop = chat.scrollHeight;
+  return div;
+}
+
+function escapeHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+</script>
+</body>
+</html>

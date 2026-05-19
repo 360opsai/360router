@@ -1,0 +1,81 @@
+{
+  "name": "360router",
+  "version": "2.3.1",
+  "description": "Smart AI model router with Layer 3 intelligence — local first, cloud when needed",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "360router": "dist/cli/main.js"
+  },
+  "scripts": {
+    "build": "tsup src/index.ts src/cli/main.ts src/server/index.ts --format esm --dts --clean",
+    "dev": "tsup src/index.ts src/cli/main.ts src/server/index.ts --format esm --dts --watch",
+    "test": "pnpm build && node tests/circuit-breaker.test.mjs && node tests/tool-call-translation.test.mjs && node tests/routing-table.test.mjs",
+    "obfuscate": "node scripts/obfuscate.mjs",
+    "build:cjs": "tsup --config tsup.cjs.config.ts",
+    "build:binary": "npm run build:cjs && npm run obfuscate && npm run pkg:all",
+    "pkg:all": "pkg dist-cjs/main.cjs --targets node20-win-x64,node20-macos-arm64,node20-macos-x64,node20-linux-x64 --output binaries/360router --compress GZip",
+    "pkg:win":   "pkg dist-cjs/main.cjs --targets node20-win-x64 --output binaries/360router-win.exe --compress GZip",
+    "pkg:mac":   "pkg dist-cjs/main.cjs --targets node20-macos-arm64,node20-macos-x64 --output binaries/360router-mac --compress GZip",
+    "pkg:linux": "pkg dist-cjs/main.cjs --targets node20-linux-x64 --output binaries/360router-linux --compress GZip"
+  },
+  "pkg": {
+    "scripts": "dist-cjs/**/*.cjs",
+    "assets": [ "dist-cjs/**/*" ],
+    "targets": [
+      "node20-win-x64",
+      "node20-macos-arm64",
+      "node20-macos-x64",
+      "node20-linux-x64"
+    ],
+    "outputPath": "binaries"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.89.0",
+    "@google/generative-ai": "^0.21.0",
+    "@types/cors": "^2.8.0",
+    "@types/express": "^4.17.0",
+    "boxen": "^8.0.0",
+    "chalk": "^5.3.0",
+    "conf": "^13.0.0",
+    "cors": "^2.8.5",
+    "express": "^4.18.0",
+    "groq-sdk": "^1.1.0",
+    "inquirer": "^12.0.0",
+    "openai": "^6.0.0",
+    "ora": "^8.0.0"
+  },
+  "devDependencies": {
+    "@yao-pkg/pkg": "^6.15.0",
+    "javascript-obfuscator": "^5.4.1",
+    "tsup": "^8.0.0",
+    "typescript": "^5.3.0"
+  },
+  "keywords": [
+    "ai",
+    "router",
+    "ollama",
+    "anthropic",
+    "openai",
+    "groq",
+    "local-first",
+    "privacy"
+  ],
+  "author": "360opsAI LLC <hello@360ops.ai> (https://360ops.ai)",
+  "license": "MIT",
+  "homepage": "https://360ops.ai/router",
+  "bugs": "https://github.com/360opsai/360router/issues",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/360opsai/360router.git"
+  },
+  "files": [
+    "dist/**/*",
+    "README.md",
+    "LICENSE"
+  ]
+}
