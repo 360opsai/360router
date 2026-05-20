@@ -11,12 +11,13 @@ import { runRoute } from './route.js';
 import { runServe } from './serve.js';
 import { runUninstall } from './uninstall.js';
 import { runUpdate } from './update.js';
+import { runService } from './service.js';
 import { runConfig } from './config.js';
 import chalk from 'chalk';
 import { getCurrentTier, getTierLimits } from '../core/tier-gate.js';
 import { loadConfig, saveConfig } from '../core/config.js';
 import { excludeModel, unexcludeModel, getExcludedModels, clearExclusions } from '../core/model-filter.js';
-import { scanApps, reconfigureApp } from '../scanner/app-scanner.js';
+import { scanApps, reconfigureApp, isAlreadyConfigured } from '../scanner/app-scanner.js';
 import inquirer from 'inquirer';
 
 const VERSION = '2.4.0';
@@ -41,6 +42,7 @@ ${chalk.bold('COMMANDS')}
   ${chalk.cyan('exclude')}        Exclude a model from auto-routing (supports *)
   ${chalk.cyan('unexclude')}      Remove a model from the exclude list
   ${chalk.cyan('update')}         Check for updates and install latest version
+  ${chalk.cyan('service')}        Install/uninstall auto-start on login (Windows/Linux/Mac)
   ${chalk.cyan('aiapp')}          Detect AI apps and rewire them to 360Router
   ${chalk.cyan('uninstall')}      Restore app configs + remove 360router config
   ${chalk.cyan('help')}           Show this help message
@@ -312,61 +314,126 @@ async function main() {
 
     case 'aiapp': {
       console.log(chalk.bold.cyan('\n  360Router — AI App Setup\n'));
+      console.log(chalk.dim('  Scanning for installed AI apps...\n'));
+
       const apps = await scanApps();
 
       if (apps.length === 0) {
-        console.log(chalk.yellow('  No supported AI apps found.\n'));
-        console.log(chalk.dim('  Supported: OpenClaw, Continue.dev, LM Studio\n'));
+        console.log(chalk.yellow('  No supported AI apps detected on this machine.\n'));
+        console.log(chalk.dim('  Supported: OpenClaw, Chatbox, Jan, GPT4All, Continue.dev,'));
+        console.log(chalk.dim('             VS Code, Cursor, LM Studio, Open WebUI,'));
+        console.log(chalk.dim('             AnythingLLM, SillyTavern, LibreChat\n'));
         break;
       }
 
-      console.log(chalk.bold(`  Found ${apps.length} AI app(s):\n`));
-      for (const app of apps) {
-        const current = app.currentEndpoint ?? 'unknown';
-        const alreadySet = current.includes('localhost:3600');
-        const status = alreadySet
-          ? chalk.green('✓ already pointing to 360Router')
-          : chalk.yellow(`currently: ${current}`);
-        console.log(`  ${chalk.cyan(app.name)} — ${status}`);
-        console.log(chalk.dim(`    ${app.configPath}`));
-      }
-      console.log('');
+      // Group by category
+      const categories: Record<string, typeof apps> = { chat: [], code: [], webui: [], agent: [] };
+      for (const app of apps) categories[app.category].push(app);
 
-      const toUpdate = apps.filter(a => {
-        const c = a.currentEndpoint ?? '';
-        return !c.includes('localhost:3600') && a.canReconfigure;
-      });
+      const categoryLabels: Record<string, string> = {
+        chat:   'Chat Clients',
+        code:   'Code Assistants',
+        webui:  'Web UIs',
+        agent:  'Agent Frameworks',
+      };
 
-      if (toUpdate.length === 0) {
-        console.log(chalk.green('  All apps already point to 360Router. Nothing to do.\n'));
-        break;
-      }
-
-      const { confirm } = await inquirer.prompt([{
-        type: 'confirm',
-        name: 'confirm',
-        message: `Rewire ${toUpdate.length} app(s) to point to 360Router (http://localhost:3600)?`,
-        default: true,
-      }]);
-
-      if (!confirm) {
-        console.log(chalk.dim('\n  Cancelled. No changes made.\n'));
-        break;
+      // Print summary grouped by category
+      for (const [cat, list] of Object.entries(categories)) {
+        if (list.length === 0) continue;
+        console.log(chalk.bold(`  ${categoryLabels[cat]}`));
+        for (const app of list) {
+          const already  = isAlreadyConfigured(app);
+          const manual   = app.method === 'instructions';
+          const status   = already
+            ? chalk.green('✓ already on 360Router')
+            : manual
+              ? chalk.cyan('⚙ manual setup required')
+              : app.currentEndpoint
+                ? chalk.yellow(`currently: ${app.currentEndpoint}`)
+                : chalk.dim('not configured');
+          console.log(`    ${chalk.white(app.name.padEnd(26))} ${status}`);
+          console.log(chalk.dim(`      ${app.description}`));
+        }
+        console.log('');
       }
 
-      for (const app of toUpdate) {
-        const ok = reconfigureApp(app);
-        if (ok) {
-          console.log(chalk.green(`  ✓ ${app.name} → http://localhost:3600`));
-          console.log(chalk.dim(`    Backup saved: ${app.configPath}.360router.bak`));
+      // Separate auto-configurable from instructions-only
+      const autoApps  = apps.filter(a => a.canReconfigure && !isAlreadyConfigured(a));
+      const manualApps = apps.filter(a => a.method === 'instructions');
+
+      // ── Auto-configure with checkbox select ─────────────────────────────────
+      if (autoApps.length > 0) {
+        console.log(chalk.bold('  Apps to rewire (all pre-selected):'));
+        autoApps.forEach((a, i) => {
+          console.log(`    ${chalk.cyan(`[${i + 1}]`)} ${a.name} ${chalk.dim(a.configPath ?? '')}`);
+        });
+        console.log(chalk.dim('\n  Enter numbers to rewire (e.g. 1,2,3) or "all" or "none":'));
+
+        const { input } = await inquirer.prompt([{
+          type: 'input',
+          name: 'input',
+          message: 'Your selection:',
+          default: 'all',
+        }]);
+
+        let selectedNames: string[] = [];
+        const raw = (input as string).trim().toLowerCase();
+        if (raw === 'all' || raw === '') {
+          selectedNames = autoApps.map(a => a.name);
+        } else if (raw === 'none') {
+          selectedNames = [];
         } else {
-          console.log(chalk.red(`  ✗ ${app.name} — could not update config`));
+          const indices = raw.split(/[\s,]+/).map(n => parseInt(n) - 1);
+          selectedNames = indices
+            .filter(i => i >= 0 && i < autoApps.length)
+            .map(i => autoApps[i].name);
+        }
+
+        const toUpdate = autoApps.filter(a => selectedNames.includes(a.name));
+
+        if (toUpdate.length > 0) {
+          console.log('');
+          console.log(chalk.bold('  Applying changes:'));
+          for (const app of toUpdate) {
+            const ok = reconfigureApp(app);
+            if (ok) {
+              console.log(chalk.green(`    ✓ ${app.name} → http://localhost:3600`));
+              console.log(chalk.dim(`      Backup: ${app.configPath}.360router.bak`));
+            } else {
+              console.log(chalk.red(`    ✗ ${app.name} — could not update config`));
+            }
+          }
+          console.log('');
+          console.log(chalk.dim('  Restart any updated apps to apply the changes.'));
+        } else {
+          console.log(chalk.dim('\n  No apps selected. Nothing changed.'));
+        }
+      } else {
+        console.log(chalk.green('  All detected auto-configurable apps already point to 360Router.\n'));
+      }
+
+      // ── Show manual instructions ─────────────────────────────────────────────
+      if (manualApps.length > 0) {
+        console.log('');
+        console.log(chalk.bold('  Manual setup required for:'));
+        for (const app of manualApps) {
+          console.log('');
+          console.log(chalk.cyan(`  ${app.name}`));
+          if (app.instructions) {
+            for (const line of app.instructions.split('\n')) {
+              console.log(chalk.dim(`    ${line}`));
+            }
+          }
         }
       }
 
-      console.log(chalk.dim('\n  Restart any open AI apps to apply changes.\n'));
+      console.log('');
       break;
     }
+
+    case 'service':
+      await runService(args.slice(1));
+      break;
 
     case 'update':
       await runUpdate();

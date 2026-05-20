@@ -6,9 +6,47 @@ import chalk from 'chalk';
 import { startServer } from '../server/index.js';
 import { healthCheckAll } from '../core/router.js';
 import { loadConfig, isConfigured, type ModelRecord } from '../core/config.js';
-import { createRoutingTable } from '../core/routing-table.js';
+import { createRoutingTable, type RoutingTable } from '../core/routing-table.js';
 import { createProvider } from '../providers/index.js';
 // Engine imported lazily inside runServe() to avoid binary load crashes
+
+const HOT_LATENCY_MS  = 100;    // model already loaded in VRAM
+const COLD_LATENCY_MS = 30000;  // model needs to load from disk
+
+/**
+ * Query each local provider's /api/ps, mark hot models with low latency
+ * and cold models with high latency so Pareto scoring prefers loaded models.
+ */
+async function refreshHotModels(table: RoutingTable): Promise<void> {
+  const config = loadConfig();
+  const localProviders = config.providers.filter(p => p.enabled && p.kind === 'local' && p.baseUrl);
+
+  const hotNames = new Set<string>();
+
+  for (const provider of localProviders) {
+    try {
+      const r = await fetch(`${provider.baseUrl}/api/ps`, {
+        headers: provider.apiKey ? { Authorization: `Bearer ${provider.apiKey}` } : {},
+        signal: AbortSignal.timeout(3000),
+      });
+      if (r.ok) {
+        const data = await r.json() as any;
+        const loaded: any[] = data.models ?? [];
+        for (const m of loaded) {
+          if (m.name) hotNames.add(m.name);
+        }
+      }
+    } catch { /* provider offline or doesn't support /api/ps */ }
+  }
+
+  // Update every record in the routing table
+  for (const record of table.getAll()) {
+    table.upsert({
+      ...record,
+      latency_avg: hotNames.has(record.name) ? HOT_LATENCY_MS : COLD_LATENCY_MS,
+    });
+  }
+}
 
 export async function runServe(args: string[]): Promise<void> {
   if (!isConfigured()) {
@@ -113,6 +151,10 @@ export async function runServe(args: string[]): Promise<void> {
   }
   // Export routing table for router.ts to use
   (globalThis as any).__360routerTable = routingTable;
+
+  // Stamp hot vs cold latency so Pareto scoring prefers loaded models
+  await refreshHotModels(routingTable);
+  setInterval(() => refreshHotModels(routingTable), 30_000);
 
   console.log();
   console.log(chalk.bold.white(`  Routing table:`));

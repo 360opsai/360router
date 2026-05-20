@@ -57,11 +57,15 @@ const ERROR_PATTERNS = [
  * NOTE: min is soft — short answers to short questions are fine.
  * The length check scales down when the input is short.
  */
-const EXPECTED_LENGTH: Record<ComplexityTier, { min: number; max: number }> = {
-  simple: { min: 1, max: 200 },
-  medium: { min: 5, max: 500 },
-  complex: { min: 20, max: 1000 },
-  expert: { min: 50, max: 2000 },
+const EXPECTED_LENGTH: Record<string, { min: number; max: number }> = {
+  simple:   { min: 1,  max: 200  },
+  medium:   { min: 5,  max: 500  },
+  complex:  { min: 20, max: 1000 },
+  expert:   { min: 50, max: 2000 },
+  // vector-assembly tier names (fast/standard/strong/expert)
+  fast:     { min: 1,  max: 200  },
+  standard: { min: 5,  max: 500  },
+  strong:   { min: 20, max: 1000 },
 };
 
 /**
@@ -133,7 +137,7 @@ function calculateRelevance(input: string, output: string): number {
  */
 function checkLength(output: string, tier: ComplexityTier): number {
   const wordCount = output.split(/\s+/).filter(w => w.length > 0).length;
-  const expected = EXPECTED_LENGTH[tier];
+  const expected = EXPECTED_LENGTH[tier] ?? EXPECTED_LENGTH['simple'];
 
   // Empty or too short
   if (wordCount === 0) return 0;
