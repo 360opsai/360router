@@ -3,13 +3,19 @@
  * Listens on port 3600 and acts as an OpenAI-compatible API endpoint
  */
 
+import http from 'http';
 import express from 'express';
 import cors from 'cors';
 import { createRoutes } from './routes.js';
 import { createOllamaRoutes } from './ollama-routes.js';
 import { authMiddleware, rateLimitMiddleware } from './middleware.js';
 
-export function startServer(port: number = 3600): express.Application {
+/**
+ * Creates and starts the proxy server.
+ * Returns the raw http.Server so the caller can attach error handlers
+ * (e.g. EADDRINUSE) and perform proper cleanup before exiting.
+ */
+export function startServer(port: number = 3600): http.Server {
   const app = express();
 
   app.use(cors());
@@ -26,29 +32,11 @@ export function startServer(port: number = 3600): express.Application {
   createOllamaRoutes(app);
 
   // Health check
-  app.get('/health', (req, res) => {
+  app.get('/health', (_req, res) => {
     res.json({ status: 'ok', version: '1.0.4', port, protocols: ['openai', 'ollama'] });
   });
 
-  const server = app.listen(port, () => {
-    console.log(`\n360Router proxy running on http://localhost:${port}`);
-    console.log(`  OpenAI apps:  http://localhost:${port}/v1`);
-    console.log(`  Ollama apps:  http://localhost:${port}  (drop-in replacement)`);
-    console.log(`Press Ctrl+C to stop.\n`);
-  });
-
-  server.on('error', (err: NodeJS.ErrnoException) => {
-    if (err.code === 'EADDRINUSE') {
-      console.log(`\n  360Router is already running on port ${port}.`);
-      console.log(`  Nothing to do — your apps are already being served.\n`);
-      console.log(`  To check status:  360router status`);
-      console.log(`  To stop it:       360router stop`);
-      console.log(`  To restart it:    360router stop  then  360router start\n`);
-      process.exit(0);
-    } else {
-      throw err;
-    }
-  });
-
-  return app;
+  // No auto-print — serve.ts owns the UI. No error handler here — caller owns it.
+  const server = app.listen(port);
+  return server;
 }

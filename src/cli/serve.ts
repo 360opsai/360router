@@ -194,9 +194,10 @@ export async function runServe(args: string[]): Promise<void> {
 
   // Stamp hot vs cold latency so Pareto scoring prefers loaded models
   await refreshHotModels(routingTable);
-  setInterval(() => refreshHotModels(routingTable), 30_000);
+  const refreshInterval = setInterval(() => refreshHotModels(routingTable), 30_000);
 
   // Pre-warm the fastest available model so OpenClaw's startup ping succeeds
+  const warmupAbort = new AbortController();
   (async () => {
     const hotModels = routingTable.getAll().filter(m => m.latency_avg === HOT_LATENCY_MS);
     const target = hotModels[0] ?? routingTable.getAll()[0];
@@ -208,7 +209,7 @@ export async function runServe(args: string[]): Promise<void> {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ model: target.name, prompt: '', stream: false }),
-        signal: AbortSignal.timeout(25_000),
+        signal: warmupAbort.signal,
       });
       console.log(chalk.dim(`  Model warmed: ${target.name}`));
     } catch { /* warmup is best-effort */ }
@@ -243,7 +244,35 @@ export async function runServe(args: string[]): Promise<void> {
   console.log(chalk.gray(`    API endpoint: http://localhost:${port}/v1`));
   console.log();
 
-  startServer(port);
+  // ── Clean teardown — cancel all live handles before exit (Windows-safe) ───
+  function cleanup() {
+    clearInterval(refreshInterval);
+    warmupAbort.abort();
+    if (process.stdin.isTTY) {
+      try { process.stdin.setRawMode(false); } catch { /* ignore */ }
+      process.stdin.pause();
+    }
+    cleanupPid();
+  }
+
+  const server = startServer(port);
+
+  // Handle EADDRINUSE after the startup window — another process (e.g. the OS
+  // service) may have grabbed the port during engine download / provider checks.
+  server.on('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EADDRINUSE') {
+      console.log(chalk.yellow(`\n  360Router is already running on port ${port}.`));
+      console.log(chalk.dim('  Nothing to do — your apps are already being served.\n'));
+      console.log(chalk.dim('  To check status:  360router status'));
+      console.log(chalk.dim('  To stop it:       360router stop'));
+      console.log(chalk.dim('  To restart it:    360router stop  then  360router start\n'));
+      cleanup();
+      process.exit(0);
+    } else {
+      cleanup();
+      throw err;
+    }
+  });
 
   // ── Keyboard shortcuts while serving ──────────────────────────────────────
   console.log(chalk.dim('  Keyboard: [s] status  [t] telemetry  [h] help  [q] quit\n'));
