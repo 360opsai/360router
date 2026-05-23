@@ -12,7 +12,7 @@ export class AnthropicProvider implements Provider {
   name = 'anthropic';
   kind: 'local' | 'cloud' = 'cloud';
   private client: Anthropic;
-  private defaultModel = 'claude-3-5-sonnet-20241022';
+  private defaultModel = 'claude-sonnet-4-5';
 
   constructor(config: ProviderConfig) {
     if (!config.apiKey) {
@@ -191,11 +191,12 @@ export class AnthropicProvider implements Provider {
   async listModels(): Promise<string[]> {
     // Anthropic doesn't have a models endpoint, return known models
     return [
+      'claude-opus-4-5',
+      'claude-sonnet-4-5',
+      'claude-haiku-4-5',
       'claude-3-5-sonnet-20241022',
       'claude-3-5-haiku-20241022',
       'claude-3-opus-20240229',
-      'claude-3-sonnet-20240229',
-      'claude-3-haiku-20240307'
     ];
   }
 }
