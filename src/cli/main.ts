@@ -19,6 +19,11 @@ import { loadConfig, saveConfig } from '../core/config.js';
 import { excludeModel, unexcludeModel, getExcludedModels, clearExclusions } from '../core/model-filter.js';
 import { scanApps, reconfigureApp, isAlreadyConfigured } from '../scanner/app-scanner.js';
 import inquirer from 'inquirer';
+import { existsSync, readFileSync } from 'fs';
+import { homedir } from 'os';
+import { join } from 'path';
+
+const PID_FILE = join(homedir(), '.360router', 'server.pid');
 
 const VERSION = '2.4.0';
 
@@ -32,9 +37,10 @@ ${chalk.bold('USAGE')}
 
 ${chalk.bold('COMMANDS')}
   ${chalk.cyan('init')}           Interactive setup wizard (tier selection included)
-  ${chalk.cyan('serve')}          Start the proxy server (port 3600)
+  ${chalk.cyan('start')}          Start the proxy server (port 3600)
+  ${chalk.cyan('stop')}           Stop the running proxy server
   ${chalk.cyan('status')}         Show provider health and stats
-  ${chalk.cyan('telemetry')}      Show routing telemetry (requires serve running)
+  ${chalk.cyan('telemetry')}      Show routing telemetry (requires start running)
   ${chalk.cyan('route')}          Route a single message
   ${chalk.cyan('config')}         View/edit settings (API keys, toggles, security)
   ${chalk.cyan('tier')}           Show current tier + upgrade info
@@ -49,7 +55,8 @@ ${chalk.bold('COMMANDS')}
 
 ${chalk.bold('EXAMPLES')}
   ${chalk.dim('$')} 360router init
-  ${chalk.dim('$')} 360router serve
+  ${chalk.dim('$')} 360router start
+  ${chalk.dim('$')} 360router stop
   ${chalk.dim('$')} 360router status
   ${chalk.dim('$')} 360router telemetry
   ${chalk.dim('$')} 360router tier
@@ -71,9 +78,36 @@ async function main() {
       await runInit();
       break;
 
-    case 'serve':
+    case 'start':
+    case 'serve': // legacy alias
       await runServe(args.slice(1));
       break;
+
+    case 'stop': {
+      if (!existsSync(PID_FILE)) {
+        console.log(chalk.yellow('\n  360Router is not running (no PID file found).\n'));
+        process.exit(0);
+      }
+      const pid = parseInt(readFileSync(PID_FILE, 'utf8').trim());
+      if (isNaN(pid)) {
+        console.log(chalk.red('\n  Invalid PID file. Try killing manually:\n  360router status\n'));
+        process.exit(1);
+      }
+      try {
+        process.kill(pid, 'SIGTERM');
+        // Give it a moment, then force kill if still alive
+        await new Promise(r => setTimeout(r, 1000));
+        try { process.kill(pid, 'SIGKILL'); } catch { /* already dead */ }
+      } catch (e: any) {
+        if (e.code !== 'ESRCH') { // ESRCH = no such process (already gone)
+          console.log(chalk.red(`\n  Could not stop process ${pid}: ${e.message}\n`));
+          process.exit(1);
+        }
+      }
+      try { if (existsSync(PID_FILE)) { const { unlinkSync } = await import('fs'); unlinkSync(PID_FILE); } } catch { /* ignore */ }
+      console.log(chalk.green('\n  ✓ 360Router stopped\n'));
+      break;
+    }
 
     case 'config':
       await runConfig(args.slice(1));
@@ -151,7 +185,7 @@ async function main() {
         console.log('');
       } catch {
         console.log(chalk.yellow(`\n  360Router is not running on port ${port}.`));
-        console.log(chalk.dim(`  Start it with: 360router serve\n`));
+        console.log(chalk.dim(`  Start it with: 360router start\n`));
       }
       break;
     }

@@ -8,6 +8,11 @@ import { healthCheckAll } from '../core/router.js';
 import { loadConfig, isConfigured, type ModelRecord } from '../core/config.js';
 import { createRoutingTable, type RoutingTable } from '../core/routing-table.js';
 import { createProvider } from '../providers/index.js';
+import { writeFileSync, existsSync, unlinkSync } from 'fs';
+import { homedir } from 'os';
+import { join } from 'path';
+
+const PID_FILE = join(homedir(), '.360router', 'server.pid');
 // Engine imported lazily inside runServe() to avoid binary load crashes
 
 const HOT_LATENCY_MS  = 100;    // model already loaded in VRAM
@@ -48,6 +53,17 @@ async function refreshHotModels(table: RoutingTable): Promise<void> {
   }
 }
 
+/** Check if a TCP port is already bound — resolves true if in use */
+async function isPortInUse(port: number): Promise<boolean> {
+  const { createServer } = await import('net');
+  return new Promise(resolve => {
+    const srv = createServer();
+    srv.once('error', (e: NodeJS.ErrnoException) => resolve(e.code === 'EADDRINUSE'));
+    srv.once('listening', () => srv.close(() => resolve(false)));
+    srv.listen(port, '127.0.0.1');
+  });
+}
+
 export async function runServe(args: string[]): Promise<void> {
   if (!isConfigured()) {
     console.log(chalk.yellow('\n  No providers configured. Run: 360router init\n'));
@@ -55,10 +71,34 @@ export async function runServe(args: string[]): Promise<void> {
   }
 
   const port = parseInt(args.find(a => a.startsWith('--port='))?.split('=')[1] ?? '3600');
+
+  // Pre-flight: bail immediately if port is already taken
+  if (await isPortInUse(port)) {
+    console.log(chalk.yellow(`\n  360Router is already running on port ${port}.`));
+    console.log(chalk.dim('  Nothing to do — your apps are already being served.\n'));
+    console.log(chalk.dim('  To check status:  360router status'));
+    console.log(chalk.dim('  To stop it:       360router stop'));
+    console.log(chalk.dim('  To restart:       360router stop  then  360router start\n'));
+    return;
+  }
+
   const skipEngine = args.includes('--no-engine');
   const config = loadConfig();
 
-  console.log(chalk.bold.cyan('\n  360Router — Starting proxy server\n'));
+  // Write PID file so `360router stop` can find us
+  try {
+    const { mkdirSync } = await import('fs');
+    mkdirSync(join(homedir(), '.360router'), { recursive: true });
+    writeFileSync(PID_FILE, String(process.pid));
+  } catch { /* non-fatal */ }
+
+  // Clean up PID file on exit
+  const cleanupPid = () => { try { if (existsSync(PID_FILE)) unlinkSync(PID_FILE); } catch { /* ignore */ } };
+  process.on('exit', cleanupPid);
+  process.on('SIGINT', () => { cleanupPid(); process.exit(0); });
+  process.on('SIGTERM', () => { cleanupPid(); process.exit(0); });
+
+  console.log(chalk.bold.cyan('\n  360Router — Starting\n'));
 
   // Start native engine (downloads on first run, ~45MB + ~700MB model)
   if (!skipEngine) {
@@ -155,6 +195,24 @@ export async function runServe(args: string[]): Promise<void> {
   // Stamp hot vs cold latency so Pareto scoring prefers loaded models
   await refreshHotModels(routingTable);
   setInterval(() => refreshHotModels(routingTable), 30_000);
+
+  // Pre-warm the fastest available model so OpenClaw's startup ping succeeds
+  (async () => {
+    const hotModels = routingTable.getAll().filter(m => m.latency_avg === HOT_LATENCY_MS);
+    const target = hotModels[0] ?? routingTable.getAll()[0];
+    if (!target) return;
+    const providerConfig = config.providers.find(p => p.name === target.provider);
+    if (!providerConfig?.baseUrl) return;
+    try {
+      await fetch(`${providerConfig.baseUrl}/api/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: target.name, prompt: '', stream: false }),
+        signal: AbortSignal.timeout(25_000),
+      });
+      console.log(chalk.dim(`  Model warmed: ${target.name}`));
+    } catch { /* warmup is best-effort */ }
+  })();
 
   console.log();
   console.log(chalk.bold.white(`  Routing table:`));

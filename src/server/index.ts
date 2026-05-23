@@ -30,11 +30,24 @@ export function startServer(port: number = 3600): express.Application {
     res.json({ status: 'ok', version: '1.0.4', port, protocols: ['openai', 'ollama'] });
   });
 
-  app.listen(port, () => {
+  const server = app.listen(port, () => {
     console.log(`\n360Router proxy running on http://localhost:${port}`);
     console.log(`  OpenAI apps:  http://localhost:${port}/v1`);
     console.log(`  Ollama apps:  http://localhost:${port}  (drop-in replacement)`);
     console.log(`Press Ctrl+C to stop.\n`);
+  });
+
+  server.on('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EADDRINUSE') {
+      console.log(`\n  360Router is already running on port ${port}.`);
+      console.log(`  Nothing to do — your apps are already being served.\n`);
+      console.log(`  To check status:  360router status`);
+      console.log(`  To stop it:       360router stop`);
+      console.log(`  To restart it:    360router stop  then  360router start\n`);
+      process.exit(0);
+    } else {
+      throw err;
+    }
   });
 
   return app;

@@ -1,147 +1,174 @@
 /**
- * Self-update command — downloads latest binary from GitHub Releases
+ * Self-update command
  *
- * No npm. Binary distribution only.
- * Checks 360opsai/360ops-releases for the latest release tag,
- * downloads the platform binary, replaces the current executable.
+ * Two paths:
+ *  1. Dev / local install  — git pull → npm run build → npm install -g .
+ *  2. npm global install   — npm install -g 360router@latest
+ *
+ * Detects which path applies automatically.
  */
 
 import chalk from 'chalk';
-import { execSync } from 'child_process';
-import { existsSync, mkdirSync, renameSync, unlinkSync } from 'fs';
-import { platform, arch, homedir } from 'os';
+import { execSync, spawnSync } from 'child_process';
+import { existsSync } from 'fs';
 import { join } from 'path';
+import ora from 'ora';
 
-const CURRENT_VERSION = '2.4.0';
-const RELEASES_REPO = '360opsai/360ops-releases';
-const RELEASES_API = `https://api.github.com/repos/${RELEASES_REPO}/releases/latest`;
+export const CURRENT_VERSION = '2.4.0';
+const NPM_PACKAGE = '360router';
 
-function getBinaryName(): string {
-  const os = platform();
-  if (os === 'win32') return '360router-win.exe';
-  if (os === 'linux') return '360router-linux';
-  if (os === 'darwin') return '360router-mac';
-  return '360router-win.exe';
-}
+// ── Helpers ────────────────────────────────────────────────────────────────
 
-function getInstallPath(): string {
-  if (platform() === 'win32') {
-    return join(process.env.LOCALAPPDATA || join(homedir(), 'AppData', 'Local'), '360Router', '360router.exe');
+function run(cmd: string, cwd?: string): { ok: boolean; out: string; err: string } {
+  try {
+    const out = execSync(cmd, {
+      cwd,
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: 120_000,
+    });
+    return { ok: true, out: out.trim(), err: '' };
+  } catch (e: any) {
+    return { ok: false, out: '', err: e.message ?? String(e) };
   }
-  return join(homedir(), '.local', 'bin', '360router');
 }
+
+/** Find where 360router is installed in the npm global node_modules. */
+function findPackageDir(): string | null {
+  const r = run('npm root -g');
+  if (!r.ok) return null;
+  const dir = join(r.out, NPM_PACKAGE);
+  return existsSync(join(dir, 'package.json')) ? dir : null;
+}
+
+/** Read installed version from package.json in the package dir. */
+function readVersion(pkgDir: string): string {
+  try {
+    const { readFileSync } = require('fs') as typeof import('fs');
+    const pkg = JSON.parse(readFileSync(join(pkgDir, 'package.json'), 'utf8'));
+    return pkg.version ?? CURRENT_VERSION;
+  } catch { return CURRENT_VERSION; }
+}
+
+/** Check npm registry for the latest published version. */
+async function fetchLatestNpmVersion(): Promise<string | null> {
+  try {
+    const res = await fetch(`https://registry.npmjs.org/${NPM_PACKAGE}/latest`, {
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) return null;
+    const data = await res.json() as any;
+    return data.version ?? null;
+  } catch { return null; }
+}
+
+// ── Main ───────────────────────────────────────────────────────────────────
 
 export async function runUpdate(): Promise<void> {
   console.log(chalk.bold.cyan('\n  360Router — Update\n'));
-  console.log(`  Current version:  ${chalk.white(CURRENT_VERSION)}`);
 
-  // Check latest release on GitHub
-  console.log(chalk.dim('  Checking for updates...'));
+  const pkgDir = findPackageDir();
+  const currentVersion = pkgDir ? readVersion(pkgDir) : CURRENT_VERSION;
+  console.log(`  Installed version: ${chalk.white(currentVersion)}`);
 
-  let latestTag: string;
-  let downloadUrl: string;
+  // ── Path 1: local git repo — pull + rebuild ──────────────────────────────
+  if (pkgDir && existsSync(join(pkgDir, '.git'))) {
+    console.log(chalk.dim(`  Source: ${pkgDir} (git repo)\n`));
 
-  try {
-    const res = await fetch(RELEASES_API, {
-      headers: { 'Accept': 'application/vnd.github+json' },
-      signal: AbortSignal.timeout(10000),
-    });
+    // Check for remote updates
+    const spinner = ora('Checking for updates...').start();
+    const fetchResult = run('git fetch --quiet', pkgDir);
+    spinner.stop();
 
-    if (!res.ok) throw new Error(`GitHub API ${res.status}`);
+    if (!fetchResult.ok) {
+      console.log(chalk.yellow('  ⚠ Could not reach remote. Building from current source.\n'));
+    } else {
+      const behind = run('git rev-list HEAD..@{u} --count', pkgDir);
+      const commitsBehind = parseInt(behind.out) || 0;
 
-    const release = await res.json() as any;
-    latestTag = release.tag_name || '';  // e.g. "360router-v2.4.0"
+      if (commitsBehind === 0) {
+        console.log(chalk.green('  ✓ Already up to date (no new commits)\n'));
+        console.log(chalk.dim('  Rebuilding anyway to apply any local changes...\n'));
+      } else {
+        console.log(chalk.yellow(`  ↓ ${commitsBehind} new commit(s) available\n`));
 
-    const binaryName = getBinaryName();
-    const asset = release.assets?.find((a: any) => a.name === binaryName);
+        // Pull
+        const pullSpinner = ora('Pulling latest changes...').start();
+        const pull = run('git pull', pkgDir);
+        pullSpinner.stop();
 
-    if (!asset) {
-      console.log(chalk.yellow(`\n  No binary found for your platform (${platform()}-${arch()}).`));
-      console.log(chalk.dim(`  Check: https://github.com/${RELEASES_REPO}/releases\n`));
+        if (!pull.ok) {
+          console.log(chalk.red(`  ✗ git pull failed: ${pull.err}\n`));
+          return;
+        }
+        console.log(chalk.green('  ✓ Pulled latest\n'));
+      }
+    }
+
+    // Build
+    const buildSpinner = ora('Building...').start();
+    const build = run('npm run build', pkgDir);
+    buildSpinner.stop();
+
+    if (!build.ok) {
+      console.log(chalk.red('  ✗ Build failed:\n'));
+      console.log(chalk.dim('  ' + build.err.split('\n').slice(0, 10).join('\n  ')));
+      return;
+    }
+    console.log(chalk.green('  ✓ Build complete\n'));
+
+    // Reinstall globally
+    const installSpinner = ora('Installing globally...').start();
+    const install = run('npm install -g .', pkgDir);
+    installSpinner.stop();
+
+    if (!install.ok) {
+      console.log(chalk.red(`  ✗ Install failed: ${install.err}\n`));
       return;
     }
 
-    downloadUrl = asset.browser_download_url;
-  } catch (e: any) {
-    console.log(chalk.red(`\n  ✗ Could not check for updates: ${e.message}\n`));
+    const newVersion = readVersion(pkgDir);
+    console.log(chalk.green(`  ✓ 360router ${newVersion} installed\n`));
+    console.log(chalk.dim('  Restart with: 360router stop  then  360router start\n'));
     return;
   }
 
-  // Extract version from tag (e.g. "360router-v2.4.0" → "2.4.0")
-  const latestVersion = latestTag.replace(/^360router-v/, '');
-  console.log(`  Latest version:   ${chalk.white(latestVersion)}`);
+  // ── Path 2: npm global install — check registry + upgrade ───────────────
+  if (pkgDir) {
+    console.log(chalk.dim(`  Source: npm global install\n`));
+  }
 
-  if (CURRENT_VERSION === latestVersion) {
+  const spinner = ora('Checking npm registry...').start();
+  const latestVersion = await fetchLatestNpmVersion();
+  spinner.stop();
+
+  if (!latestVersion) {
+    console.log(chalk.yellow('  Could not reach npm registry.\n'));
+    console.log(chalk.dim('  Manual update: npm install -g 360router@latest\n'));
+    return;
+  }
+
+  console.log(`  Latest version:    ${chalk.white(latestVersion)}`);
+
+  if (currentVersion === latestVersion) {
     console.log(chalk.green('\n  ✓ Already up to date!\n'));
     return;
   }
 
-  console.log(chalk.yellow(`\n  Update available: ${CURRENT_VERSION} → ${latestVersion}`));
+  console.log(chalk.yellow(`\n  Update available: ${currentVersion} → ${latestVersion}\n`));
 
-  // Download new binary
-  const installPath = getInstallPath();
-  const backupPath = installPath + '.bak';
-  const tempPath = installPath + '.new';
+  const installSpinner = ora(`Installing 360router@${latestVersion}...`).start();
+  const result = run(`npm install -g ${NPM_PACKAGE}@latest`);
+  installSpinner.stop();
 
-  console.log(chalk.dim(`  Downloading from ${RELEASES_REPO}...`));
-
-  try {
-    const res = await fetch(downloadUrl, { redirect: 'follow' });
-    if (!res.ok) throw new Error(`Download HTTP ${res.status}`);
-
-    const totalBytes = parseInt(res.headers.get('content-length') || '0');
-    const reader = res.body?.getReader();
-    if (!reader) throw new Error('No response body');
-
-    const { createWriteStream } = await import('fs');
-    const writer = createWriteStream(tempPath);
-    let downloaded = 0;
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      writer.write(Buffer.from(value));
-      downloaded += value.length;
-      if (totalBytes > 0) {
-        const pct = Math.round((downloaded / totalBytes) * 100);
-        const mb = Math.round(downloaded / 1024 / 1024);
-        process.stdout.write(`\r  Downloading: ${mb} MB (${pct}%)   `);
-      }
-    }
-    writer.end();
-    await new Promise<void>((resolve, reject) => {
-      writer.on('finish', resolve);
-      writer.on('error', reject);
-    });
-
-    console.log('');
-
-    // Swap: current → backup, new → current
-    if (existsSync(installPath)) {
-      try { unlinkSync(backupPath); } catch { /* no old backup */ }
-      renameSync(installPath, backupPath);
-    }
-    renameSync(tempPath, installPath);
-
-    // Make executable on unix
-    if (platform() !== 'win32') {
-      execSync(`chmod +x "${installPath}"`, { stdio: 'pipe' });
-    }
-
-    console.log(chalk.green(`\n  ✓ Updated to ${latestVersion}`));
-    console.log(chalk.dim(`  Binary: ${installPath}`));
-    console.log(chalk.dim('  Restart 360router serve to use the new version.\n'));
-
-  } catch (e: any) {
-    // Restore backup if swap failed
-    if (existsSync(backupPath) && !existsSync(installPath)) {
-      try { renameSync(backupPath, installPath); } catch { /* */ }
-    }
-    try { unlinkSync(tempPath); } catch { /* */ }
-
-    console.log(chalk.red(`\n  ✗ Update failed: ${e.message}`));
-    console.log(chalk.dim(`  Download manually: https://github.com/${RELEASES_REPO}/releases\n`));
+  if (!result.ok) {
+    console.log(chalk.red(`  ✗ Update failed: ${result.err}\n`));
+    console.log(chalk.dim('  Try manually: npm install -g 360router@latest\n'));
+    return;
   }
+
+  console.log(chalk.green(`  ✓ Updated to ${latestVersion}\n`));
+  console.log(chalk.dim('  Restart with: 360router stop  then  360router start\n'));
 }
 
 export function getCurrentVersion(): string {

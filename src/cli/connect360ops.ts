@@ -57,15 +57,15 @@ function httpsPost(hostname: string, path: string, body: object): Promise<{ stat
   });
 }
 
-// ─── Spartan connect ───────────────────────────────────────────────────────
+// ─── Local AI box connect ──────────────────────────────────────────────────
 
-async function connectSpartan(): Promise<boolean> {
+async function connectLocalBox(): Promise<boolean> {
   const { ip } = await inquirer.prompt([
     {
       type: 'input',
       name: 'ip',
-      message: 'Spartan IP or Tailscale hostname:',
-      default: '100.77.138.83',
+      message: 'AI box IP or Tailscale hostname:',
+      default: '',
       validate: (v: string) => v.trim() ? true : 'IP or hostname is required'
     }
   ]);
@@ -75,7 +75,7 @@ async function connectSpartan(): Promise<boolean> {
       type: 'password',
       name: 'apiKey',
       mask: '*',
-      message: 'Spartan API key (press Enter to skip):',
+      message: 'API key (press Enter to skip):',
     }
   ]);
 
@@ -83,14 +83,14 @@ async function connectSpartan(): Promise<boolean> {
   const key  = (apiKey as string).trim() || undefined;
 
   // Test router health
-  const spinner = ora('Connecting to Spartan...').start();
+  const spinner = ora(`Connecting to ${host}...`).start();
   const health = await httpGet(`http://${host}:4000/health`, key);
   spinner.stop();
 
   if (!health.ok) {
-    console.log(chalk.red(`\n  ✗ Could not reach Spartan at ${host}:4000`));
+    console.log(chalk.red(`\n  ✗ Could not reach AI router at ${host}:4000`));
     console.log(chalk.dim(`    ${health.error ?? 'No response'}`));
-    console.log(chalk.dim('    Make sure the Spartan AI Router is running and the IP is correct.\n'));
+    console.log(chalk.dim('    Make sure the AI router is running and the IP is correct.\n'));
     return false;
   }
 
@@ -98,23 +98,22 @@ async function connectSpartan(): Promise<boolean> {
   const models = await httpGet(`http://${host}:4000/api/models`, key);
   const modelCount = models.ok && Array.isArray(models.body?.data) ? models.body.data.length : 0;
 
-  console.log(chalk.green(`\n  ✓ Spartan reachable at ${host}:4000`));
+  console.log(chalk.green(`\n  ✓ AI box reachable at ${host}`));
   if (modelCount > 0) {
     console.log(chalk.green(`  ✓ ${modelCount} models available`));
   }
 
-  // Register as provider in router config
-  // Points at Ollama on the Spartan box (the actual inference engine)
+  // Use IP as both name and label — no internal branding in customer configs
   upsertProvider({
-    name:    'spartan',
+    name:    host,
     kind:    'local',
     enabled: true,
     baseUrl: `http://${host}:11434`,
     apiKey:  key,
-    label:   `360ops Spartan (${host})`
+    label:   host
   });
 
-  console.log(chalk.green('  ✓ Spartan added as provider → 360router will route to it\n'));
+  console.log(chalk.green(`  ✓ ${host} added as provider → 360router will route to it\n`));
   return true;
 }
 
@@ -188,8 +187,7 @@ async function connectAtlas(): Promise<boolean> {
 
 export async function connect360ops(): Promise<void> {
   console.log(chalk.bold('\n360ops System (optional)'));
-  console.log(chalk.dim('Connect to your Spartan local AI box or Atlas cloud.'));
-  console.log(chalk.dim('OpenClaw will route through 360Router → your 360ops system.\n'));
+  console.log(chalk.dim('Connect to a local AI box or Atlas cloud.\n'));
 
   const { systemChoice } = await inquirer.prompt([
     {
@@ -197,9 +195,9 @@ export async function connect360ops(): Promise<void> {
       name: 'systemChoice',
       message: 'Connect to a 360ops system?',
       choices: [
-        { name: 'Spartan  — local AI box, data stays on-prem', value: 'spartan' },
-        { name: 'Atlas    — cloud, portal.360ops.ai',          value: 'atlas'   },
-        { name: 'Skip for now',                                value: 'skip'    }
+        { name: 'Local AI box  — on-prem GPU server, data stays local', value: 'local' },
+        { name: 'Atlas         — cloud, portal.360ops.ai',              value: 'atlas' },
+        { name: 'Skip for now',                                         value: 'skip'  }
       ],
       default: 'skip'
     }
@@ -210,8 +208,8 @@ export async function connect360ops(): Promise<void> {
     return;
   }
 
-  const success = systemChoice === 'spartan'
-    ? await connectSpartan()
+  const success = systemChoice === 'local'
+    ? await connectLocalBox()
     : await connectAtlas();
 
   if (!success) {

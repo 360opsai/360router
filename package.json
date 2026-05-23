@@ -1,6 +1,8 @@
 {
   "name": "360router",
-  "version": "2.3.1",
+  "version": "2.4.0",
+  "private": true,
+  "publishConfig": { "access": "public" },
   "description": "Smart AI model router with Layer 3 intelligence — local first, cloud when needed",
   "type": "module",
   "main": "./dist/index.js",
@@ -76,6 +78,7 @@
   "files": [
     "dist/**/*",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "SECURITY.md"
   ]
 }
