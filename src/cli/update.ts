@@ -72,7 +72,13 @@ export async function runUpdate(): Promise<void> {
   console.log(`  Installed version: ${chalk.white(currentVersion)}`);
 
   // ── Path 1: local git repo — pull + rebuild ──────────────────────────────
-  if (pkgDir && existsSync(join(pkgDir, '.git'))) {
+  // Guard: if pkgDir is inside node_modules it was copied there by `npm install -g .`
+  // and devDependencies (tsup) won't be present — fall through to npm path instead.
+  const isDevRepo = pkgDir &&
+    existsSync(join(pkgDir, '.git')) &&
+    !pkgDir.split(/[\\/]/).includes('node_modules');
+
+  if (isDevRepo && pkgDir) {
     console.log(chalk.dim(`  Source: ${pkgDir} (git repo)\n`));
 
     // Check for remote updates
